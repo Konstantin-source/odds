@@ -13,7 +13,7 @@ services:
       - LLM_API_KEY=${LLM_API_KEY:-}
       - SESSION_SECRET=${SESSION_SECRET:-}
     networks:
-      - web_services
+      - web-services
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/api/auth/status')"]
@@ -27,5 +27,5 @@ volumes:
     driver: local
 
 networks:
-  web_services:
+  web-services:
     external: true
