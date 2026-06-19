@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 # In-Memory Cache: maxsize=200 Einträge, TTL aus Konfiguration
 _cache: TTLCache | None = None
 _session: requests.Session | None = None
+_time_offset: float | None = None
 
 
 def _get_cache() -> TTLCache:
@@ -45,6 +46,21 @@ def _get_session() -> requests.Session:
             "Accept-Language": "en-US,en;q=0.9",
         })
     return _session
+
+
+def _get_real_now() -> int:
+    """Gibt den aktuellen realen Zeitstempel zurück, basierend auf dem geladenen Offset."""
+    local_now = time.time()
+    if _time_offset is not None:
+        return int(local_now + _time_offset)
+    return int(local_now)
+
+
+def _update_time_offset(real_ts: int):
+    """Aktualisiert das Offset zwischen lokaler Zeit und Realzeit."""
+    global _time_offset
+    local_now = time.time()
+    _time_offset = real_ts - local_now
 
 
 def _cached(key: str):
@@ -152,6 +168,9 @@ async def get_stock_quote(ticker: str) -> dict:
         p_task = _fetch_from_finnhub("stock/profile2", {"symbol": ticker.upper()})
 
         q_data, p_data = await asyncio.gather(q_task, p_task)
+
+        if q_data and q_data.get("t"):
+            _update_time_offset(q_data["t"])
 
         if not q_data or q_data.get("c") is None or q_data.get("c") == 0:
             return {"error": f"Keine Kursdaten für {ticker} bei Finnhub gefunden"}
@@ -371,23 +390,33 @@ async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
     # Finnhub API Fallback
     if get_settings().FINNHUB_API_KEY:
         logger.info("Rufe Historie ab für %s (%s) via Finnhub", ticker, period)
-        to_ts = int(time.time())
-        now = datetime.now()
+        
+        global _time_offset
+        if _time_offset is None:
+            try:
+                # Schnelle Abfrage um Realzeit-Offset zu kalibrieren
+                temp_q = await _fetch_from_finnhub("quote", {"symbol": ticker.upper()})
+                if temp_q and temp_q.get("t"):
+                    _update_time_offset(temp_q["t"])
+            except Exception:
+                pass
 
+        to_ts = _get_real_now()
+        
         if period == "1mo":
-            from_dt = now - timedelta(days=30)
+            days = 30
         elif period == "3mo":
-            from_dt = now - timedelta(days=90)
+            days = 90
         elif period == "6mo":
-            from_dt = now - timedelta(days=180)
+            days = 180
         elif period == "1y":
-            from_dt = now - timedelta(days=365)
+            days = 365
         elif period == "5y":
-            from_dt = now - timedelta(days=5*365)
+            days = 5 * 365
         else:
-            from_dt = now - timedelta(days=180)
+            days = 180
 
-        from_ts = int(from_dt.timestamp())
+        from_ts = to_ts - (days * 24 * 60 * 60)
 
         candles = await _fetch_from_finnhub("stock/candle", {
             "symbol": ticker.upper(),
