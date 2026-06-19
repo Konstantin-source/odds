@@ -6,8 +6,12 @@ services:
       - "8501:8501"
     volumes:
       - dashboard_data:/app/data
-    env_file:
-      - .env
+    environment:
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      - LLM_API_URL=${LLM_API_URL:-https://api.ai.rh-koeln.de/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-mistral-large-3-675b-instruct-2512}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
     networks:
       - web_services
     restart: unless-stopped
