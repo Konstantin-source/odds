@@ -1,0 +1,31 @@
+services:
+  stock-dashboard:
+    build: .
+    container_name: stock-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - dashboard_data:/app/data
+    environment:
+      - DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+      - LLM_API_URL=${LLM_API_URL:-https://api.ai.rh-koeln.de/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-mistral-large-3-675b-instruct-2512}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
+    networks:
+      - web-services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/api/auth/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  dashboard_data:
+    driver: local
+
+networks:
+  web-services:
+    external: true
