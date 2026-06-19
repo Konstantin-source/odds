@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 import pandas as pd
+import requests
 import yfinance as yf
 from cachetools import TTLCache
 from ta.momentum import RSIIndicator
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 # In-Memory Cache: maxsize=200 Einträge, TTL aus Konfiguration
 _cache: TTLCache | None = None
+_session: requests.Session | None = None
 
 
 def _get_cache() -> TTLCache:
@@ -28,6 +30,18 @@ def _get_cache() -> TTLCache:
     if _cache is None:
         _cache = TTLCache(maxsize=200, ttl=get_settings().CACHE_TTL)
     return _cache
+
+
+def _get_session() -> requests.Session:
+    """Session mit Browser-Header initialisieren, um Blocks von Yahoo zu verhindern."""
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+    return _session
 
 
 def _cached(key: str):
@@ -49,7 +63,7 @@ def _set_cache(key: str, value: Any):
 def _fetch_ticker_info(ticker: str) -> dict:
     """Holt die .info-Daten eines Tickers."""
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=_get_session())
         info = t.info or {}
         return info
     except Exception as e:
@@ -60,7 +74,7 @@ def _fetch_ticker_info(ticker: str) -> dict:
 def _fetch_history(ticker: str, period: str = "6mo") -> pd.DataFrame:
     """Holt historische Kursdaten."""
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=_get_session())
         hist = t.history(period=period)
         return hist
     except Exception as e:
@@ -72,7 +86,7 @@ def _search_tickers(query: str) -> list[dict]:
     """Sucht nach Aktien via yfinance."""
     try:
         results = []
-        search = yf.Search(query)
+        search = yf.Search(query, session=_get_session())
         quotes = getattr(search, "quotes", []) or []
         for q in quotes[:10]:
             results.append({
