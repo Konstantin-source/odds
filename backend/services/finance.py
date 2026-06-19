@@ -22,18 +22,59 @@ from backend.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# In-Memory Cache: maxsize=200 Einträge, TTL aus Konfiguration
-_cache: TTLCache | None = None
+# In-Memory Caches für verschiedene Datenkategorien (lazy initialisiert)
+_quote_cache: TTLCache | None = None
+_history_cache: TTLCache | None = None
+_fundamentals_cache: TTLCache | None = None
+_technicals_cache: TTLCache | None = None
+_search_cache: TTLCache | None = None
+
 _session: requests.Session | None = None
 _time_offset: float | None = None
 
 
-def _get_cache() -> TTLCache:
-    """Cache lazy initialisieren (Settings könnten noch nicht geladen sein)."""
-    global _cache
-    if _cache is None:
-        _cache = TTLCache(maxsize=200, ttl=get_settings().CACHE_TTL)
-    return _cache
+# ---------------------------------------------------------------------------
+# Caching Helpers (Multi-Tier Caching)
+# ---------------------------------------------------------------------------
+
+def _get_quote_cache() -> TTLCache:
+    global _quote_cache
+    if _quote_cache is None:
+        # Default: 5 Minuten für Kursdaten (Echtzeitkurse)
+        _quote_cache = TTLCache(maxsize=100, ttl=max(60, get_settings().CACHE_TTL))
+    return _quote_cache
+
+
+def _get_history_cache() -> TTLCache:
+    global _history_cache
+    if _history_cache is None:
+        # 4 Stunden Cache für historische Kursdaten (ändern sich nur einmal am Tag)
+        _history_cache = TTLCache(maxsize=100, ttl=14400)
+    return _history_cache
+
+
+def _get_fundamentals_cache() -> TTLCache:
+    global _fundamentals_cache
+    if _fundamentals_cache is None:
+        # 12 Stunden Cache für fundamentale Unternehmenskennzahlen (KGV, Div, etc.)
+        _fundamentals_cache = TTLCache(maxsize=100, ttl=43200)
+    return _fundamentals_cache
+
+
+def _get_technicals_cache() -> TTLCache:
+    global _technicals_cache
+    if _technicals_cache is None:
+        # 4 Stunden Cache für berechnete technische Indikatoren (RSI, SMAs)
+        _technicals_cache = TTLCache(maxsize=100, ttl=14400)
+    return _technicals_cache
+
+
+def _get_search_cache() -> TTLCache:
+    global _search_cache
+    if _search_cache is None:
+        # 1 Stunde Cache für Aktiensuchen
+        _search_cache = TTLCache(maxsize=100, ttl=3600)
+    return _search_cache
 
 
 def _get_session() -> requests.Session:
@@ -61,18 +102,6 @@ def _update_time_offset(real_ts: int):
     global _time_offset
     local_now = time.time()
     _time_offset = real_ts - local_now
-
-
-def _cached(key: str):
-    """Einfacher Cache-Lookup."""
-    cache = _get_cache()
-    return cache.get(key)
-
-
-def _set_cache(key: str, value: Any):
-    """Wert im Cache speichern."""
-    cache = _get_cache()
-    cache[key] = value
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +185,8 @@ async def get_stock_quote(ticker: str) -> dict:
     Aktueller Kurs, Tagesveränderung, Volumen.
     Gibt ein standardisiertes Dict zurück.
     """
-    cache_key = f"quote:{ticker}"
-    cached = _cached(cache_key)
+    cache = _get_quote_cache()
+    cached = cache.get(ticker.upper())
     if cached is not None:
         return cached
 
@@ -192,7 +221,7 @@ async def get_stock_quote(ticker: str) -> dict:
             "volume": 0,
             "currency": p_data.get("currency") or "USD",
         }
-        _set_cache(cache_key, result)
+        cache[ticker.upper()] = result
         return result
 
     # Ansonsten yfinance
@@ -225,14 +254,14 @@ async def get_stock_quote(ticker: str) -> dict:
         "currency": info.get("currency", "USD"),
     }
 
-    _set_cache(cache_key, result)
+    cache[ticker.upper()] = result
     return result
 
 
 async def get_fundamentals(ticker: str) -> dict:
     """KGV, Dividendenrendite, Marktkapitalisierung, 52W-Hoch/Tief."""
-    cache_key = f"fundamentals:{ticker}"
-    cached = _cached(cache_key)
+    cache = _get_fundamentals_cache()
+    cached = cache.get(ticker.upper())
     if cached is not None:
         return cached
 
@@ -263,7 +292,7 @@ async def get_fundamentals(ticker: str) -> dict:
             "industry": p_data.get("finnhubIndustry") or "",
             "description": f"Unternehmen: {p_data.get('name', ticker.upper())}. Branche: {p_data.get('finnhubIndustry', 'N/A')}. IPO: {p_data.get('ipo', 'N/A')}.",
         }
-        _set_cache(cache_key, result)
+        cache[ticker.upper()] = result
         return result
 
     # Ansonsten yfinance
@@ -286,7 +315,7 @@ async def get_fundamentals(ticker: str) -> dict:
         "description": info.get("longBusinessSummary", ""),
     }
 
-    _set_cache(cache_key, result)
+    cache[ticker.upper()] = result
     return result
 
 
@@ -295,8 +324,8 @@ async def get_technical_indicators(ticker: str) -> dict:
     Berechnet RSI(14), SMA(50), SMA(200), EMA(20)
     auf Basis von 1 Jahr täglicher Daten.
     """
-    cache_key = f"technicals:{ticker}"
-    cached = _cached(cache_key)
+    cache = _get_technicals_cache()
+    cached = cache.get(ticker.upper())
     if cached is not None:
         return cached
 
@@ -376,14 +405,15 @@ async def get_technical_indicators(ticker: str) -> dict:
         "ema_signal": ema_signal,
     }
 
-    _set_cache(cache_key, result)
+    cache[ticker.upper()] = result
     return result
 
 
 async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
     """Historische Kursdaten für Sparkline-Charts."""
-    cache_key = f"history:{ticker}:{period}"
-    cached = _cached(cache_key)
+    cache_key = f"{ticker.upper()}:{period}"
+    cache = _get_history_cache()
+    cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
@@ -426,29 +456,32 @@ async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
         })
 
         if not candles or candles.get("s") != "ok":
-            return []
+            # WICHTIG: Auf dem Free-Tier von Finnhub ist /stock/candle gesperrt (403).
+            # Wir fallen in diesem Fall auf yfinance für die historischen Daten zurück,
+            # da yfinance auf lokalen IPs meist wieder funktioniert, sobald die Sperre abgelaufen ist.
+            logger.warning("Finnhub /stock/candle fehlgeschlagen (evtl. Free-Tier Limit). Versuche yfinance Fallback.")
+        else:
+            records = []
+            timestamps = candles.get("t", [])
+            opens = candles.get("o", [])
+            highs = candles.get("h", [])
+            lows = candles.get("l", [])
+            closes = candles.get("c", [])
+            volumes = candles.get("v", [])
 
-        records = []
-        timestamps = candles.get("t", [])
-        opens = candles.get("o", [])
-        highs = candles.get("h", [])
-        lows = candles.get("l", [])
-        closes = candles.get("c", [])
-        volumes = candles.get("v", [])
+            for i in range(len(timestamps)):
+                dt = datetime.fromtimestamp(timestamps[i])
+                records.append({
+                    "date": dt.strftime("%Y-%m-%d"),
+                    "open": round(float(opens[i]), 4) if i < len(opens) else 0.0,
+                    "high": round(float(highs[i]), 4) if i < len(highs) else 0.0,
+                    "low": round(float(lows[i]), 4) if i < len(lows) else 0.0,
+                    "close": round(float(closes[i]), 4) if i < len(closes) else 0.0,
+                    "volume": int(volumes[i]) if i < len(volumes) else 0,
+                })
 
-        for i in range(len(timestamps)):
-            dt = datetime.fromtimestamp(timestamps[i])
-            records.append({
-                "date": dt.strftime("%Y-%m-%d"),
-                "open": round(float(opens[i]), 4) if i < len(opens) else 0.0,
-                "high": round(float(highs[i]), 4) if i < len(highs) else 0.0,
-                "low": round(float(lows[i]), 4) if i < len(lows) else 0.0,
-                "close": round(float(closes[i]), 4) if i < len(closes) else 0.0,
-                "volume": int(volumes[i]) if i < len(volumes) else 0,
-            })
-
-        _set_cache(cache_key, records)
-        return records
+            cache[cache_key] = records
+            return records
 
     # Ansonsten yfinance
     logger.info("Rufe Historie ab für %s (%s) via yfinance", ticker, period)
@@ -484,7 +517,7 @@ async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
             "volume": int(volume) if pd.notna(volume) else 0,
         })
 
-    _set_cache(cache_key, records)
+    cache[cache_key] = records
     return records
 
 
@@ -493,8 +526,9 @@ async def search_stocks(query: str) -> list[dict]:
     if not query or len(query) < 1:
         return []
 
-    cache_key = f"search:{query.lower()}"
-    cached = _cached(cache_key)
+    cache_key = query.lower()
+    cache = _get_search_cache()
+    cached = cache.get(cache_key)
     if cached is not None:
         return cached
 
@@ -510,13 +544,13 @@ async def search_stocks(query: str) -> list[dict]:
                 "exchange": "",
                 "type": r.get("type", ""),
             })
-        _set_cache(cache_key, results)
+        cache[cache_key] = results
         return results
 
     # Ansonsten yfinance
     logger.info("Suche Aktien für '%s' via yfinance", query)
     results = await asyncio.to_thread(_search_tickers, query)
-    _set_cache(cache_key, results)
+    cache[cache_key] = results
     return results
 
 
