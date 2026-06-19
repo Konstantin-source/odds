@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "mistral-large-3-675b-instruct-2512"
     LLM_API_KEY: str = ""
 
+    # --- Financial Data API ---
+    FINNHUB_API_KEY: str = ""
+
     # --- Datenbank ---
     DB_PATH: str = "/app/data/watchlist.db"
 

@@ -1,13 +1,16 @@
 """
-Yahoo Finance Wrapper mit Caching und technischen Indikatoren.
-Alle yfinance-Aufrufe werden in asyncio.to_thread() gekapselt,
-da yfinance synchron arbeitet.
+Yahoo Finance & Finnhub Wrapper mit Caching und technischen Indikatoren.
+Wenn FINNHUB_API_KEY konfiguriert ist, wird Finnhub verwendet.
+Ansonsten wird yfinance (mit User-Agent Session) verwendet.
 """
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timedelta
 from typing import Any
 
+import httpx
 import pandas as pd
 import requests
 import yfinance as yf
@@ -57,28 +60,55 @@ def _set_cache(key: str, value: Any):
 
 
 # ---------------------------------------------------------------------------
+# Finnhub API Client
+# ---------------------------------------------------------------------------
+
+async def _fetch_from_finnhub(endpoint: str, params: dict) -> dict:
+    """Hilfsfunktion für Finnhub REST API Aufrufe."""
+    settings = get_settings()
+    api_key = settings.FINNHUB_API_KEY
+    if not api_key:
+        return {}
+
+    url = f"https://finnhub.io/api/v1/{endpoint}"
+    params["token"] = api_key
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, timeout=15.0)
+            if response.status_code == 200:
+                return response.json()
+            else:
+                logger.error("Finnhub API Fehler (%s) %s: %s", endpoint, response.status_code, response.text)
+                return {}
+    except Exception as e:
+        logger.error("Finnhub Verbindungsfehler (%s): %s", endpoint, e)
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Synchrone yfinance Helfer (werden in Threads ausgeführt)
 # ---------------------------------------------------------------------------
 
 def _fetch_ticker_info(ticker: str) -> dict:
-    """Holt die .info-Daten eines Tickers."""
+    """Holt die .info-Daten eines Tickers via yfinance."""
     try:
         t = yf.Ticker(ticker, session=_get_session())
         info = t.info or {}
         return info
     except Exception as e:
-        logger.error("Fehler beim Abruf von %s info: %s", ticker, e)
+        logger.error("Fehler beim Abruf von %s info via yfinance: %s", ticker, e)
         return {}
 
 
 def _fetch_history(ticker: str, period: str = "6mo") -> pd.DataFrame:
-    """Holt historische Kursdaten."""
+    """Holt historische Kursdaten via yfinance."""
     try:
         t = yf.Ticker(ticker, session=_get_session())
         hist = t.history(period=period)
         return hist
     except Exception as e:
-        logger.error("Fehler beim Abruf von %s History (%s): %s", ticker, period, e)
+        logger.error("Fehler beim Abruf von %s History (%s) via yfinance: %s", ticker, period, e)
         return pd.DataFrame()
 
 
@@ -97,7 +127,7 @@ def _search_tickers(query: str) -> list[dict]:
             })
         return results
     except Exception as e:
-        logger.error("Fehler bei der Suche nach '%s': %s", query, e)
+        logger.error("Fehler bei der Suche nach '%s' via yfinance: %s", query, e)
         return []
 
 
@@ -115,6 +145,39 @@ async def get_stock_quote(ticker: str) -> dict:
     if cached is not None:
         return cached
 
+    # Finnhub API Fallback
+    if get_settings().FINNHUB_API_KEY:
+        logger.info("Rufe Kursdaten ab für %s via Finnhub", ticker)
+        q_task = _fetch_from_finnhub("quote", {"symbol": ticker.upper()})
+        p_task = _fetch_from_finnhub("stock/profile2", {"symbol": ticker.upper()})
+
+        q_data, p_data = await asyncio.gather(q_task, p_task)
+
+        if not q_data or q_data.get("c") is None or q_data.get("c") == 0:
+            return {"error": f"Keine Kursdaten für {ticker} bei Finnhub gefunden"}
+
+        price = q_data.get("c") or 0
+        prev_close = q_data.get("pc") or 0
+        change = q_data.get("d") or 0
+        change_pct = q_data.get("dp") or 0
+
+        result = {
+            "symbol": ticker.upper(),
+            "name": p_data.get("name") or p_data.get("ticker") or ticker.upper(),
+            "price": price,
+            "previous_close": prev_close,
+            "change": round(change, 4),
+            "change_percent": round(change_pct, 4),
+            "day_high": q_data.get("h"),
+            "day_low": q_data.get("l"),
+            "volume": 0,
+            "currency": p_data.get("currency") or "USD",
+        }
+        _set_cache(cache_key, result)
+        return result
+
+    # Ansonsten yfinance
+    logger.info("Rufe Kursdaten ab für %s via yfinance", ticker)
     info = await asyncio.to_thread(_fetch_ticker_info, ticker)
 
     if not info:
@@ -132,7 +195,7 @@ async def get_stock_quote(ticker: str) -> dict:
 
     result = {
         "symbol": info.get("symbol", ticker),
-        "name": info.get("shortName") or info.get("longName", ticker),
+        "name": info.get("shortName") or info.get("longName") or ticker,
         "price": price,
         "previous_close": prev_close,
         "change": round(change, 4),
@@ -154,6 +217,38 @@ async def get_fundamentals(ticker: str) -> dict:
     if cached is not None:
         return cached
 
+    # Finnhub API Fallback
+    if get_settings().FINNHUB_API_KEY:
+        logger.info("Rufe Fundamentaldaten ab für %s via Finnhub", ticker)
+        p_task = _fetch_from_finnhub("stock/profile2", {"symbol": ticker.upper()})
+        m_task = _fetch_from_finnhub("stock/metric", {"symbol": ticker.upper(), "metric": "all"})
+
+        p_data, m_data = await asyncio.gather(p_task, m_task)
+        metrics = m_data.get("metric", {}) if m_data else {}
+
+        market_cap = None
+        if p_data.get("marketCapitalization"):
+            market_cap = float(p_data["marketCapitalization"]) * 1000000  # Finnhub returns in Millions
+        else:
+            market_cap = metrics.get("marketCapitalization")
+
+        result = {
+            "market_cap": market_cap,
+            "pe_ratio": metrics.get("peNormalized") or metrics.get("peTrailing"),
+            "forward_pe": metrics.get("peForward"),
+            "dividend_yield": (metrics.get("dividendYieldIndicatedAnnual") or metrics.get("dividendYield5Y")),
+            "beta": metrics.get("beta"),
+            "fifty_two_week_high": metrics.get("52WeekHigh"),
+            "fifty_two_week_low": metrics.get("52WeekLow"),
+            "sector": p_data.get("finnhubIndustry") or "",
+            "industry": p_data.get("finnhubIndustry") or "",
+            "description": f"Unternehmen: {p_data.get('name', ticker.upper())}. Branche: {p_data.get('finnhubIndustry', 'N/A')}. IPO: {p_data.get('ipo', 'N/A')}.",
+        }
+        _set_cache(cache_key, result)
+        return result
+
+    # Ansonsten yfinance
+    logger.info("Rufe Fundamentaldaten ab für %s via yfinance", ticker)
     info = await asyncio.to_thread(_fetch_ticker_info, ticker)
 
     if not info:
@@ -186,16 +281,14 @@ async def get_technical_indicators(ticker: str) -> dict:
     if cached is not None:
         return cached
 
-    hist = await asyncio.to_thread(_fetch_history, ticker, "1y")
+    # Greift auf das einheitliche get_history zurück
+    history_records = await get_history(ticker, "1y")
 
-    if hist.empty or len(hist) < 20:
+    if not history_records or len(history_records) < 20:
         return {"error": "Nicht genug Daten für technische Analyse"}
 
-    close = hist["Close"]
-
-    # Wenn Close eine Multi-Level-Column hat (z.B. bei neueren yfinance-Versionen)
-    if isinstance(close, pd.DataFrame):
-        close = close.iloc[:, 0]
+    close_prices = [r["close"] for r in history_records]
+    close = pd.Series(close_prices)
 
     current_price = float(close.iloc[-1])
 
@@ -275,6 +368,61 @@ async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
     if cached is not None:
         return cached
 
+    # Finnhub API Fallback
+    if get_settings().FINNHUB_API_KEY:
+        logger.info("Rufe Historie ab für %s (%s) via Finnhub", ticker, period)
+        to_ts = int(time.time())
+        now = datetime.now()
+
+        if period == "1mo":
+            from_dt = now - timedelta(days=30)
+        elif period == "3mo":
+            from_dt = now - timedelta(days=90)
+        elif period == "6mo":
+            from_dt = now - timedelta(days=180)
+        elif period == "1y":
+            from_dt = now - timedelta(days=365)
+        elif period == "5y":
+            from_dt = now - timedelta(days=5*365)
+        else:
+            from_dt = now - timedelta(days=180)
+
+        from_ts = int(from_dt.timestamp())
+
+        candles = await _fetch_from_finnhub("stock/candle", {
+            "symbol": ticker.upper(),
+            "resolution": "D",
+            "from": from_ts,
+            "to": to_ts
+        })
+
+        if not candles or candles.get("s") != "ok":
+            return []
+
+        records = []
+        timestamps = candles.get("t", [])
+        opens = candles.get("o", [])
+        highs = candles.get("h", [])
+        lows = candles.get("l", [])
+        closes = candles.get("c", [])
+        volumes = candles.get("v", [])
+
+        for i in range(len(timestamps)):
+            dt = datetime.fromtimestamp(timestamps[i])
+            records.append({
+                "date": dt.strftime("%Y-%m-%d"),
+                "open": round(float(opens[i]), 4) if i < len(opens) else 0.0,
+                "high": round(float(highs[i]), 4) if i < len(highs) else 0.0,
+                "low": round(float(lows[i]), 4) if i < len(lows) else 0.0,
+                "close": round(float(closes[i]), 4) if i < len(closes) else 0.0,
+                "volume": int(volumes[i]) if i < len(volumes) else 0,
+            })
+
+        _set_cache(cache_key, records)
+        return records
+
+    # Ansonsten yfinance
+    logger.info("Rufe Historie ab für %s (%s) via yfinance", ticker, period)
     hist = await asyncio.to_thread(_fetch_history, ticker, period)
 
     if hist.empty:
@@ -282,7 +430,6 @@ async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
 
     records = []
     for date, row in hist.iterrows():
-        # Handle multi-level columns
         close = row["Close"]
         if hasattr(close, "iloc"):
             close = close.iloc[0]
@@ -313,7 +460,7 @@ async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
 
 
 async def search_stocks(query: str) -> list[dict]:
-    """Aktiensuche via yfinance."""
+    """Aktiensuche via yfinance oder Finnhub."""
     if not query or len(query) < 1:
         return []
 
@@ -322,6 +469,23 @@ async def search_stocks(query: str) -> list[dict]:
     if cached is not None:
         return cached
 
+    # Finnhub API Fallback
+    if get_settings().FINNHUB_API_KEY:
+        logger.info("Suche Aktien für '%s' via Finnhub", query)
+        data = await _fetch_from_finnhub("search", {"q": query})
+        results = []
+        for r in data.get("result", [])[:10]:
+            results.append({
+                "ticker": r.get("symbol", ""),
+                "name": r.get("description") or r.get("symbol", ""),
+                "exchange": "",
+                "type": r.get("type", ""),
+            })
+        _set_cache(cache_key, results)
+        return results
+
+    # Ansonsten yfinance
+    logger.info("Suche Aktien für '%s' via yfinance", query)
     results = await asyncio.to_thread(_search_tickers, query)
     _set_cache(cache_key, results)
     return results

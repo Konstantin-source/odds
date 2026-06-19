@@ -12,6 +12,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-mistral-large-3-675b-instruct-2512}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - SESSION_SECRET=${SESSION_SECRET:-}
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
     networks:
       - web-services
     restart: unless-stopped

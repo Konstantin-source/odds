@@ -376,6 +376,28 @@ async def api_debug():
             "traceback": traceback.format_exc(),
         }
         
+    # Test 5: Finnhub API Key und Verbindung
+    settings = get_settings()
+    results["finnhub_config"] = {
+        "has_api_key": bool(settings.FINNHUB_API_KEY),
+        "api_key_length": len(settings.FINNHUB_API_KEY) if settings.FINNHUB_API_KEY else 0,
+    }
+    if settings.FINNHUB_API_KEY:
+        try:
+            from backend.services.finance import _fetch_from_finnhub
+            test_res = await _fetch_from_finnhub("quote", {"symbol": "SAP.DE"})
+            results["finnhub_api_call"] = {
+                "success": bool(test_res and test_res.get("c") is not None and test_res.get("c") != 0),
+                "price": test_res.get("c"),
+                "raw_response": test_res,
+            }
+        except Exception as e:
+            results["finnhub_api_call"] = {
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }
+            
     return results
 
 
