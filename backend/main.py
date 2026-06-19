@@ -389,7 +389,7 @@ async def api_debug():
             async with httpx.AsyncClient() as client:
                 r = await client.get(
                     "https://finnhub.io/api/v1/quote",
-                    params={"symbol": "SAP.DE", "token": settings.FINNHUB_API_KEY},
+                    params={"symbol": "AAPL", "token": settings.FINNHUB_API_KEY},
                     timeout=10.0
                 )
                 results["finnhub_direct_test"] = {
@@ -404,7 +404,7 @@ async def api_debug():
 
         try:
             from backend.services.finance import _fetch_from_finnhub
-            test_res = await _fetch_from_finnhub("quote", {"symbol": "SAP.DE"})
+            test_res = await _fetch_from_finnhub("quote", {"symbol": "AAPL"})
             results["finnhub_api_call"] = {
                 "success": bool(test_res and test_res.get("c") is not None and test_res.get("c") != 0),
                 "price": test_res.get("c"),
