@@ -416,6 +416,22 @@ async def api_debug():
                 "error": str(e),
                 "traceback": traceback.format_exc(),
             }
+        try:
+            from backend.services.finance import get_history, _time_offset, _get_real_now
+            hist_res = await get_history("AAPL", "3mo")
+            results["finnhub_history_test"] = {
+                "success": isinstance(hist_res, list) and len(hist_res) > 0,
+                "records_count": len(hist_res) if hist_res else 0,
+                "time_offset": _time_offset,
+                "real_now": _get_real_now(),
+                "sample_record": hist_res[0] if hist_res else None,
+            }
+        except Exception as e:
+            results["finnhub_history_test"] = {
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }
             
     return results
 
