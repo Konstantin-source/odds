@@ -417,14 +417,29 @@ async def api_debug():
                 "traceback": traceback.format_exc(),
             }
         try:
-            from backend.services.finance import get_history, _time_offset, _get_real_now
+            from backend.services.finance import get_history, _time_offset, _get_real_now, _fetch_from_finnhub
             hist_res = await get_history("AAPL", "3mo")
+            
+            # Direkte Candle-Abfrage zur Diagnose
+            to_ts = _get_real_now()
+            from_ts = to_ts - (90 * 24 * 60 * 60)
+            raw_candles = await _fetch_from_finnhub("stock/candle", {
+                "symbol": "AAPL",
+                "resolution": "D",
+                "from": from_ts,
+                "to": to_ts
+            })
+            
             results["finnhub_history_test"] = {
                 "success": isinstance(hist_res, list) and len(hist_res) > 0,
                 "records_count": len(hist_res) if hist_res else 0,
                 "time_offset": _time_offset,
                 "real_now": _get_real_now(),
-                "sample_record": hist_res[0] if hist_res else None,
+                "from_ts": from_ts,
+                "to_ts": to_ts,
+                "raw_candles_status": raw_candles.get("s") if raw_candles else None,
+                "raw_candles_keys": list(raw_candles.keys()) if raw_candles else [],
+                "raw_candles_full": raw_candles,
             }
         except Exception as e:
             results["finnhub_history_test"] = {
