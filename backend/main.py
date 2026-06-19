@@ -305,6 +305,81 @@ async def api_get_analysis(ticker: str):
 
 
 # ---------------------------------------------------------------------------
+# Debug Route
+# ---------------------------------------------------------------------------
+@app.get("/api/debug", dependencies=[Depends(require_auth)])
+async def api_debug():
+    """Debug-Endpunkt zum Testen von yfinance und Netzwerkkonnektivität."""
+    import traceback
+    import yfinance as yf
+    
+    results = {}
+    
+    # Test 1: yf.Search ohne session
+    try:
+        s = yf.Search("ama")
+        results["search_no_session"] = {
+            "success": True,
+            "quotes_count": len(getattr(s, "quotes", []) or []),
+        }
+    except Exception as e:
+        results["search_no_session"] = {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        
+    # Test 2: yf.Search mit session
+    try:
+        from backend.services.finance import _get_session
+        s = yf.Search("ama", session=_get_session())
+        results["search_with_session"] = {
+            "success": True,
+            "quotes_count": len(getattr(s, "quotes", []) or []),
+        }
+    except Exception as e:
+        results["search_with_session"] = {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        
+    # Test 3: Ticker SAP.DE mit session
+    try:
+        from backend.services.finance import _get_session
+        t = yf.Ticker("SAP.DE", session=_get_session())
+        results["ticker_with_session"] = {
+            "success": True,
+            "info_keys_count": len(t.info) if t.info else 0,
+            "price": t.info.get("regularMarketPrice") or t.info.get("currentPrice") if t.info else None,
+        }
+    except Exception as e:
+        results["ticker_with_session"] = {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        
+    # Test 4: DNS / Verbindung zu Yahoo direkt
+    try:
+        import httpx
+        r = await httpx.AsyncClient().get("https://query2.finance.yahoo.com/v1/finance/search?q=ama")
+        results["direct_yahoo_http_call"] = {
+            "success": True,
+            "status_code": r.status_code,
+            "content_length": len(r.text),
+        }
+    except Exception as e:
+        results["direct_yahoo_http_call"] = {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+        }
+        
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Globaler Exception Handler
 # ---------------------------------------------------------------------------
 @app.exception_handler(Exception)
