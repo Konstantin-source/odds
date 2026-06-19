@@ -383,6 +383,25 @@ async def api_debug():
         "api_key_length": len(settings.FINNHUB_API_KEY) if settings.FINNHUB_API_KEY else 0,
     }
     if settings.FINNHUB_API_KEY:
+        # Direkter REST-Aufruf mit Details
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    "https://finnhub.io/api/v1/quote",
+                    params={"symbol": "SAP.DE", "token": settings.FINNHUB_API_KEY},
+                    timeout=10.0
+                )
+                results["finnhub_direct_test"] = {
+                    "status_code": r.status_code,
+                    "response_text": r.text[:200],
+                }
+        except Exception as e:
+            results["finnhub_direct_test"] = {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }
+
         try:
             from backend.services.finance import _fetch_from_finnhub
             test_res = await _fetch_from_finnhub("quote", {"symbol": "SAP.DE"})
