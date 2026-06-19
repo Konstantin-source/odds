@@ -5,9 +5,10 @@ Hauptanwendung mit Auth, API-Routen und Static-File-Serving.
 
 import asyncio
 import logging
+import math
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,28 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from pydantic import BaseModel
+
+
+def clean_nans(obj: Any) -> Any:
+    """Rekursive Bereinigung von NaN- und Inf-Werten zu None (null)."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: clean_nans(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_nans(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(clean_nans(v) for v in obj)
+    return obj
+
+
+class SafeJSONResponse(JSONResponse):
+    """JSONResponse die NaN/Inf Werte sicher zu null konvertiert."""
+    def render(self, content: Any) -> bytes:
+        clean_content = clean_nans(content)
+        return super().render(clean_content)
 
 from backend.config import get_settings
 from backend.database import init_db, get_watchlist, add_stock, remove_stock
@@ -57,6 +80,7 @@ app = FastAPI(
     description="Selbstgehostetes Aktien-Dashboard mit Watchlist, Technischer Analyse und KI-Empfehlungen",
     version="1.0.0",
     lifespan=lifespan,
+    default_response_class=SafeJSONResponse,
 )
 
 # CORS — für lokale Entwicklung alle Origins erlauben
@@ -287,7 +311,7 @@ async def api_get_analysis(ticker: str):
 async def global_exception_handler(request: Request, exc: Exception):
     """Fängt unbehandelte Exceptions ab und gibt eine saubere Fehlermeldung zurück."""
     logger.error("Unbehandelter Fehler: %s", exc, exc_info=True)
-    return JSONResponse(
+    return SafeJSONResponse(
         status_code=500,
         content={"detail": "Interner Serverfehler. Bitte versuche es später erneut."},
     )
