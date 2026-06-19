@@ -430,6 +430,29 @@ async def api_debug():
                 "to": to_ts
             })
             
+            try:
+                async with httpx.AsyncClient() as client:
+                    r = await client.get(
+                        "https://finnhub.io/api/v1/stock/candle",
+                        params={
+                            "symbol": "AAPL",
+                            "resolution": "D",
+                            "from": from_ts,
+                            "to": to_ts,
+                            "token": settings.FINNHUB_API_KEY
+                        },
+                        timeout=10.0
+                    )
+                    results["finnhub_candle_direct_test"] = {
+                        "status_code": r.status_code,
+                        "response_text": r.text[:200],
+                    }
+            except Exception as e_direct:
+                results["finnhub_candle_direct_test"] = {
+                    "error": str(e_direct),
+                    "traceback": traceback.format_exc(),
+                }
+            
             results["finnhub_history_test"] = {
                 "success": isinstance(hist_res, list) and len(hist_res) > 0,
                 "records_count": len(hist_res) if hist_res else 0,
