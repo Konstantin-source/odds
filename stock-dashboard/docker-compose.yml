@@ -1,0 +1,27 @@
+services:
+  stock-dashboard:
+    build: .
+    container_name: stock-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - dashboard_data:/app/data
+    env_file:
+      - .env
+    networks:
+      - web_services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/api/auth/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  dashboard_data:
+    driver: local
+
+networks:
+  web_services:
+    external: true
