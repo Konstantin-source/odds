@@ -522,7 +522,7 @@ async def get_history(ticker: str, period: str = "6mo") -> list[dict]:
 
 
 async def search_stocks(query: str) -> list[dict]:
-    """Aktiensuche via yfinance oder Finnhub."""
+    """Aktiensuche via yfinance oder Finnhub mit Fallback-Logik."""
     if not query or len(query) < 1:
         return []
 
@@ -544,10 +544,13 @@ async def search_stocks(query: str) -> list[dict]:
                 "exchange": "",
                 "type": r.get("type", ""),
             })
-        cache[cache_key] = results
-        return results
+        if results:
+            cache[cache_key] = results
+            return results
+        else:
+            logger.warning("Finnhub returned empty results for %s, falling back to yfinance", query)
 
-    # Ansonsten yfinance
+    # Ansonsten yfinance (oder Rückfall wenn Finnhub leer)
     logger.info("Suche Aktien für '%s' via yfinance", query)
     results = await asyncio.to_thread(_search_tickers, query)
     cache[cache_key] = results
